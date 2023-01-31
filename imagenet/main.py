@@ -348,7 +348,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         val_dataset = datasets.ImageFolder(
             valdir,
-            val_transformers
+            val_transforms
             )
 
     if args.distributed:
@@ -415,6 +415,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         # train for one epoch
         train(train_loader, model, criterion, optimizer, epoch, device, args)
+        return
 
         # evaluate on validation set
         acc1 = validate(val_loader, model, criterion, args)
@@ -451,37 +452,183 @@ def train(train_loader, model, criterion, optimizer, epoch, device, args):
     # switch to train mode
     model.train()
 
-    end = time.time()
-    for i, (images, target) in enumerate(train_loader):
-        # measure data loading time
-        data_time.update(time.time() - end)
+    profile_iter = (args.num_iter+args.num_warmup) // 2
+    if args.profile and args.device == "xpu":
+        for i, (images, target) in enumerate(train_loader):
+            if i == args.num_iter:
+                break
 
-        # move data to the same device as model
-        images = images.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
+            with torch.autograd.profiler_legacy.profile(True, use_xpu=True) as prof:
+                start_time = time.time()
+                # move data to the same device as model
+                images = images.to(device, non_blocking=True)
+                target = target.to(device, non_blocking=True)
 
-        # compute output
-        output = model(images)
-        loss = criterion(output, target)
+                # compute output
+                with torch.xpu.amp.autocast(enabled=True, dtype=args.datatype):
+                    output = model(images)
+                    loss = criterion(output, target)
+                # measure accuracy and record loss
+                acc1, acc5 = accuracy(output, target, topk=(1, 5))
+                losses.update(loss.item(), images.size(0))
+                top1.update(acc1[0], images.size(0))
+                top5.update(acc5[0], images.size(0))
 
-        # measure accuracy and record loss
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
-        losses.update(loss.item(), images.size(0))
-        top1.update(acc1[0], images.size(0))
-        top5.update(acc5[0], images.size(0))
+                # compute gradient and do SGD step
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-        # compute gradient and do SGD step
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+                # D2H
+                loss.cpu()
+                output.cpu()
+                if args.device == "xpu":
+                    torch.xpu.synchronize()
+                duration = time.time() - start_time
+            print("Iteration: {}, training time: {} sec.".format(i, duration), flush=True)
+            # measure elapsed time 
+            if i >= args.num_warmup:
+                batch_time.update(duration)
+            if i % args.print_freq == 0:
+                progress.display(i + 1)
+            if args.profile and i == profile_iter:
+                import pathlib
+                timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+                if not os.path.exists(timeline_dir):
+                    try:
+                        os.makedirs(timeline_dir)
+                    except:
+                        pass
+                torch.save(prof.key_averages().table(sort_by="self_xpu_time_total"),
+                    timeline_dir+'profile.pt')
+                torch.save(prof.key_averages(group_by_input_shape=True).table(),
+                    timeline_dir+'profile_detail.pt')
+                torch.save(prof.table(sort_by="id", row_limit=100000),
+                    timeline_dir+'profile_detail_withId.pt')
+                prof.export_chrome_trace(timeline_dir+"trace.json")
+    elif args.profile and args.device != "xpu":
+        if args.device == "cuda":
+            profile_act = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
+        else:
+            profile_act = [torch.profiler.ProfilerActivity.CPU]
+        with torch.profiler.profile(
+            activities=profile_act,
+            record_shapes=True,
+            schedule=torch.profiler.schedule(
+                wait=profile_iter,
+                warmup=1,
+                active=1,
+            ),
+            on_trace_ready=trace_handler,
+        ) as p:
+            for i, (images, target) in enumerate(train_loader):
+                if i == args.num_iter:
+                    break
+                if args.channels_last and args.device != "xpu":
+                    if len(images.shape) == 4:
+                        images = images.to(memory_format=torch.channels_last)
+                    elif len(images.shape) == 5:
+                        images = images.to(memory_format=torch.channels_last_3d)
 
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
+                start_time = time.time()
+                # move data to the same device as model
+                images = images.to(device, non_blocking=True)
+                target = target.to(device, non_blocking=True)
 
-        if i % args.print_freq == 0:
-            progress.display(i + 1)
+                # compute output
+                if args.device == "cuda":
+                    with torch.cuda.amp.autocast(enabled=True, dtype=args.datatype):
+                        output = model(images)
+                        loss = criterion(output, target)
+                else:
+                    with torch.cpu.amp.autocast(enabled=True, dtype=args.datatype):
+                        output = model(images)
+                        loss = criterion(output, target)
 
+                # measure accuracy and record loss
+                acc1, acc5 = accuracy(output, target, topk=(1, 5))
+                losses.update(loss.item(), images.size(0))
+                top1.update(acc1[0], images.size(0))
+                top5.update(acc5[0], images.size(0))
+
+                # compute gradient and do SGD step
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                # D2H
+                loss.cpu()
+                output.cpu()
+                if args.device == "cuda":
+                    torch.cuda.synchronize()
+                duration = time.time() - start_time
+                p.step()
+                print("Iteration: {}, training time: {} sec.".format(i, duration), flush=True)
+                # measure elapsed time
+                if i >= args.num_warmup:
+                    batch_time.update(duration)
+                if i % args.print_freq == 0:
+                    progress.display(i + 1)
+    else:
+        for i, (images, target) in enumerate(train_loader):
+            if i == args.num_iter:
+                break
+            if args.channels_last and args.device != "xpu":
+                if len(images.shape) == 4:
+                    images = images.to(memory_format=torch.channels_last)
+                elif len(images.shape) == 5:
+                    images = images.to(memory_format=torch.channels_last_3d)
+
+            start_time = time.time()
+            # move data to the same device as model
+            images = images.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
+
+            # compute output
+            if args.device == "xpu":
+                with torch.xpu.amp.autocast(enabled=True, dtype=args.datatype):
+                    output = model(images)
+                    loss = criterion(output, target)
+            elif args.device == "cuda":
+                with torch.cuda.amp.autocast(enabled=True, dtype=args.datatype):
+                    output = model(images)
+                    loss = criterion(output, target)
+            else:
+                with torch.cpu.amp.autocast(enabled=True, dtype=args.datatype):
+                    output = model(images)
+                    loss = criterion(output, target)
+
+            # measure accuracy and record loss
+            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            losses.update(loss.item(), images.size(0))
+            top1.update(acc1[0], images.size(0))
+            top5.update(acc5[0], images.size(0))
+
+            # compute gradient and do SGD step
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            # D2H
+            loss.cpu()
+            output.cpu()
+            if args.device == "xpu":
+                torch.xpu.synchronize()
+            elif args.device == "cuda":
+                torch.cuda.synchronize()
+            duration = time.time() - start_time
+            print("Iteration: {}, training time: {} sec.".format(i, duration), flush=True)
+            # measure elapsed time 
+            if i >= args.num_warmup:
+                batch_time.update(duration)
+            if i % args.print_freq == 0:
+                progress.display(i + 1)
+
+    batch_size = train_loader.batch_size
+    latency = batch_time.avg / batch_size * 1000
+    perf = batch_size/batch_time.avg
+    print('%d epoch training latency: %3.0f ms'%(0, latency))
+    print('%d epoch training Throughput: %3.0f fps'%(0, perf))
 
 def validate(val_loader, model, criterion, args):
     if args.nv_fuser:
