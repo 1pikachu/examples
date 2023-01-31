@@ -24,6 +24,7 @@ function main {
             logs_path_clean
 
 	    # get batchSize
+	    DATASET_DIR=/home2/pytorch-broad-models/imagenet/raw
             if [[ ${mode_name} == "train" ]];then
                 exec_cmd=" ./imagenet/main.py --data ${DATASET_DIR} --epochs 1 "
             else # realtime
