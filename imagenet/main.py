@@ -270,8 +270,12 @@ def main_worker(gpu, ngpus_per_node, args):
 
     args.datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
     if args.device == "xpu":
+        if args.evaluate:
+            model.eval()
+            model = torch.xpu.optimize(model=model, dtype=args.datatype)
+        else:
+            model, optimizer = torch.xpu.optimize(model=model, optimizer=optimizer, dtype=args.datatype)
         print("----xpu optimize")
-        model, optimizer = torch.xpu.optimize(model=model, optimizer=optimizer, dtype=args.datatype)
     
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
     scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
@@ -486,24 +490,63 @@ def validate(val_loader, model, criterion, args):
         fuser_mode = "none"
     print("---- fuser mode:", fuser_mode)
     if args.jit:
-        sample_input = iter(val_loader).__next__()[0]
+        sample_input = iter(val_loader).__next__()[0].to(args.device)
         with torch.no_grad():
             try:
-                modelJit = torch.jit.script(model)
+                if args.device == "cuda":
+                    modelJit = torch.jit.script(model)
+                else:
+                    modelJit = torch.jit.trace(model, sample_input)
                 print("---- Use trace model.")
                 model = modelJit
             except (RuntimeError, TypeError) as e:
                 print("---- JIT trace disable.")
                 print("failed to use PyTorch jit mode due to: ", e)
-        if args.bn_folding and args.device == "cuda":
-            model = wrap_cpp_module(torch._C._jit_pass_fold_convbn(model._c))
-            print("---- Conv+bn folding")
+            if args.bn_folding and args.device == "cuda":
+                model = wrap_cpp_module(torch._C._jit_pass_fold_convbn(model._c))
+                print("---- Conv+bn folding")
 
     def run_validate(loader, base_progress=0):
         profile_iter = (args.num_iter+args.num_warmup) // 2
         with torch.no_grad():
             if args.profile and args.device == "xpu":
-                pass
+                for i, (images, target) in enumerate(loader):
+                    if i == args.num_iter:
+                        break
+                    if args.channels_last and args.device != "xpu":
+                        if len(images.shape) == 4:
+                            images = images.to(memory_format=torch.channels_last)
+                        elif len(images.shape) == 5:
+                            images = images.to(memory_format=torch.channels_last_3d)
+
+                    with torch.autograd.profiler_legacy.profile(enabled=True, use_xpu=True, record_shapes=False) as prof:
+                        start_time = time.time()
+                        images = images.to(args.device)
+
+                        # compute output
+                        output = model(images)
+
+                        torch.xpu.synchronize()
+                        duration = time.time() - start_time
+
+                    print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
+                    if i >= args.num_warmup:
+                        batch_time.update(duration)
+                    if args.profile and i == profile_iter:
+                        import pathlib
+                        timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+                        if not os.path.exists(timeline_dir):
+                            try:
+                                os.makedirs(timeline_dir)
+                            except:
+                                pass
+                        torch.save(prof.key_averages().table(sort_by="self_xpu_time_total"),
+                            timeline_dir+'profile.pt')
+                        torch.save(prof.key_averages(group_by_input_shape=True).table(),
+                            timeline_dir+'profile_detail.pt')
+                        torch.save(prof.table(sort_by="id", row_limit=100000),
+                            timeline_dir+'profile_detail_withId.pt')
+                        prof.export_chrome_trace(timeline_dir+"trace.json")
             elif args.profile and args.device != "xpu":
                 if args.device == "cuda":
                     profile_act = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
@@ -530,7 +573,6 @@ def validate(val_loader, model, criterion, args):
 
                         start_time = time.time()
                         images = images.to(args.device)
-                        target = target.to(args.device)
 
                         # compute output
                         if args.device == "cuda":
@@ -543,7 +585,6 @@ def validate(val_loader, model, criterion, args):
                             torch.cuda.synchronize()
                         duration = time.time() - start_time
                         p.step()
-                        loss = criterion(output, target)
 
                         print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
                         if i >= args.num_warmup:
@@ -560,7 +601,6 @@ def validate(val_loader, model, criterion, args):
 
                     start_time = time.time()
                     images = images.to(args.device)
-                    target = target.to(args.device)
 
                     # compute output
                     if args.device == "cuda":
@@ -574,7 +614,6 @@ def validate(val_loader, model, criterion, args):
                     elif args.device == "xpu":
                         torch.xpu.synchronize()
                     duration = time.time() - start_time
-                    loss = criterion(output, target)
 
                     print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
                     if i >= args.num_warmup:
