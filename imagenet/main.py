@@ -25,8 +25,22 @@ model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
 
+params_dict = {
+    # Coefficients:   width,depth,res,dropout
+    'efficientnet_b0': (1.0, 1.0, 224, 0.2),
+    'efficientnet_b1': (1.0, 1.1, 240, 0.2),
+    'efficientnet_b2': (1.1, 1.2, 260, 0.3),
+    'efficientnet_b3': (1.2, 1.4, 300, 0.3),
+    'efficientnet_b4': (1.4, 1.8, 380, 0.4),
+    'efficientnet_b5': (1.6, 2.2, 456, 0.4),
+    'efficientnet_b6': (1.8, 2.6, 528, 0.5),
+    'efficientnet_b7': (2.0, 3.1, 600, 0.5),
+    'efficientnet_b8': (2.2, 3.6, 672, 0.5),
+    'efficientnet_l2': (4.3, 5.3, 800, 0.5),
+}
+
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('data', metavar='DIR', nargs='?', default='imagenet',
+parser.add_argument('--data', metavar='DIR', default='imagenet',
                     help='path to dataset (default: imagenet)')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
                     choices=model_names,
@@ -77,12 +91,32 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'fastest way to use PyTorch for either single node or '
                          'multi node data parallel training')
 parser.add_argument('--dummy', action='store_true', help="use fake data to benchmark")
+# OOB
+parser.add_argument('--precision', default="float32", type=str, help='precision')
+parser.add_argument('--channels_last', default=1, type=int, help='Use NHWC or not')
+parser.add_argument('--jit', action='store_true', default=False, help='enable JIT')
+parser.add_argument('--trt', action='store_true', default=False,
+                    help='enable fwk+trt')
+parser.add_argument('--profile', action='store_true', default=False, help='collect timeline')
+parser.add_argument('--num_iter', default=200, type=int, help='test iterations')
+parser.add_argument('--num_warmup', default=20, type=int, help='test warmup')
+parser.add_argument('--device', default='cpu', type=str, help='cpu, cuda or xpu')
+parser.add_argument('--nv_fuser', action='store_true', default=False, help='enable nv fuser')
+parser.add_argument('--bn_folding', action='store_true', default=False,
+                    help='enable bn folding')
+parser.add_argument('--image_size', default=224, type=int,
+                    help='image size')
 
+args = parser.parse_args()
 best_acc1 = 0
 
 
 def main():
-    args = parser.parse_args()
+
+    if args.device == "xpu":
+        import intel_extension_for_pytorch
+    elif args.device == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = False
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -137,63 +171,107 @@ def main_worker(gpu, ngpus_per_node, args):
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
     # create model
-    if args.pretrained:
-        print("=> using pre-trained model '{}'".format(args.arch))
-        model = models.__dict__[args.arch](pretrained=True)
-    else:
-        print("=> creating model '{}'".format(args.arch))
-        model = models.__dict__[args.arch]()
+    if 'efficientnet_b8' in args.arch:  # NEW
+        import geffnet
+        if args.jit:
+            geffnet.config.set_scriptable(True)
+        if args.pretrained:
+            model = geffnet.create_model(args.arch, num_classes=args.num_classes, in_chans=3, pretrained=True)
+            print("=> using pre-trained model '{}'".format(args.arch))
+        else:
+            print("=> creating model '{}'".format(args.arch))
+            model = geffnet.create_model(args.arch, num_classes=args.num_classes, in_chans=3, pretrained=False)
+    elif 'mixnet' in args.arch or 'fbnetc_100' in args.arch or 'spnasnet_100' in args.arch:
+        import geffnet
+        if args.jit:
+            geffnet.config.set_scriptable(True)
+        if args.pretrained:
+            model = geffnet.create_model(args.arch, num_classes=args.num_classes, in_chans=3, pretrained=True)
+            print("=> using pre-trained model '{}'".format(args.arch))
+        else:
+            print("=> creating model '{}'".format(args.arch))
+            model = geffnet.create_model(args.arch, num_classes=args.num_classes, in_chans=3, pretrained=False)
 
-    if not torch.cuda.is_available() and not torch.backends.mps.is_available():
-        print('using CPU, this will be slow')
-    elif args.distributed:
-        # For multiprocessing distributed, DistributedDataParallel constructor
-        # should always set the single device scope, otherwise,
-        # DistributedDataParallel will use all available devices.
-        if torch.cuda.is_available():
-            if args.gpu is not None:
-                torch.cuda.set_device(args.gpu)
-                model.cuda(args.gpu)
-                # When using a single GPU per process and per
-                # DistributedDataParallel, we need to divide the batch size
-                # ourselves based on the total number of GPUs of the current node.
-                args.batch_size = int(args.batch_size / ngpus_per_node)
-                args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
-                model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+    else:
+        if args.pretrained:
+            print("=> using pre-trained model '{}'".format(args.arch))
+            if args.arch == "inception_v3":
+                model = models.__dict__[args.arch](pretrained=True, aux_logits=True, transform_input=False)
             else:
-                model.cuda()
-                # DistributedDataParallel will divide and allocate batch_size to all
-                # available GPUs if device_ids are not set
-                model = torch.nn.parallel.DistributedDataParallel(model)
-    elif args.gpu is not None and torch.cuda.is_available():
-        torch.cuda.set_device(args.gpu)
-        model = model.cuda(args.gpu)
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-        model = model.to(device)
-    else:
-        # DataParallel will divide and allocate batch_size to all available GPUs
-        if args.arch.startswith('alexnet') or args.arch.startswith('vgg'):
-            model.features = torch.nn.DataParallel(model.features)
-            model.cuda()
+                if args.arch == "googlenet":
+                    model = models.__dict__[args.arch](pretrained=True, transform_input=False)
+                else:
+                    model = models.__dict__[args.arch](pretrained=True)
         else:
-            model = torch.nn.DataParallel(model).cuda()
+            if args.arch == "inception_v3":
+                print("=> creating model '{}'".format(args.arch))
+                model = models.__dict__[args.arch](aux_logits=True)
+            else:
+                print("=> creating model '{}'".format(args.arch))
+                model = models.__dict__[args.arch]()
 
-    if torch.cuda.is_available():
-        if args.gpu:
-            device = torch.device('cuda:{}'.format(args.gpu))
-        else:
-            device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+    #if not torch.cuda.is_available() and not torch.backends.mps.is_available():
+    #    device = torch.device(args.device)
+    #    model = model.to(device)
+    #elif args.distributed:
+    #    # For multiprocessing distributed, DistributedDataParallel constructor
+    #    # should always set the single device scope, otherwise,
+    #    # DistributedDataParallel will use all available devices.
+    #    if torch.cuda.is_available():
+    #        if args.gpu is not None:
+    #            torch.cuda.set_device(args.gpu)
+    #            model.cuda(args.gpu)
+    #            # When using a single GPU per process and per
+    #            # DistributedDataParallel, we need to divide the batch size
+    #            # ourselves based on the total number of GPUs of the current node.
+    #            args.batch_size = int(args.batch_size / ngpus_per_node)
+    #            args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
+    #            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+    #        else:
+    #            model.cuda()
+    #            # DistributedDataParallel will divide and allocate batch_size to all
+    #            # available GPUs if device_ids are not set
+    #            model = torch.nn.parallel.DistributedDataParallel(model)
+    #elif args.gpu is not None and torch.cuda.is_available():
+    #    torch.cuda.set_device(args.gpu)
+    #    model = model.cuda(args.gpu)
+    #elif torch.backends.mps.is_available():
+    #    device = torch.device("mps")
+    #    model = model.to(device)
+    #else:
+    #    # DataParallel will divide and allocate batch_size to all available GPUs
+    #    if args.arch.startswith('alexnet') or args.arch.startswith('vgg'):
+    #        model.features = torch.nn.DataParallel(model.features)
+    #        model.cuda()
+    #    else:
+    #        model = torch.nn.DataParallel(model).cuda()
+    device = torch.device(args.device)
+    model = model.to(device)
+    print("----model device:", device)
+    if args.channels_last and args.device != "xpu":
+        model = model.to(memory_format=torch.channels_last)
+        print("Use NHWC model.")
+
+    #if torch.cuda.is_available():
+    #    if args.gpu:
+    #        device = torch.device('cuda:{}'.format(args.gpu))
+    #    else:
+    #        device = torch.device("cuda")
+    #elif torch.backends.mps.is_available():
+    #    device = torch.device("mps")
+    #else:
+    #    device = torch.device(args.device)
     # define loss function (criterion), optimizer, and learning rate scheduler
     criterion = nn.CrossEntropyLoss().to(device)
 
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
+
+    args.datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
+    if args.device == "xpu":
+        print("----xpu optimize")
+        model, optimizer = torch.xpu.optimize(model=model, optimizer=optimizer, dtype=args.datatype)
     
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
     scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
@@ -221,17 +299,39 @@ def main_worker(gpu, ngpus_per_node, args):
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225])
+    if 'efficientnet' in args.arch:
+        image_size = get_image_size(args.arch)
+        val_transforms = transforms.Compose([
+            transforms.Resize(image_size, interpolation=PIL.Image.BICUBIC),
+            transforms.CenterCrop(image_size),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        args.image_size = image_size
+        print('Using image size', image_size)
+    elif 'mixnet' in args.arch:
+        image_size = 112
+        args.image_size = image_size
+        print('Using image size', image_size)
+    else:
+        val_transforms = transforms.Compose([
+            transforms.Resize(args.image_size),
+            transforms.CenterCrop(args.image_size),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        print('Using image size', args.image_size)
 
     # Data loading code
     if args.dummy:
         print("=> Dummy data is used!")
-        train_dataset = datasets.FakeData(1281167, (3, 224, 224), 1000, transforms.ToTensor())
-        val_dataset = datasets.FakeData(50000, (3, 224, 224), 1000, transforms.ToTensor())
+        train_dataset = datasets.FakeData(1281167, (3, args.image_size, args.image_size), 1000, transforms.ToTensor())
+        val_dataset = datasets.FakeData(50000, (3, args.image_size, args.image_size), 1000, transforms.ToTensor())
     else:
         traindir = os.path.join(args.data, 'train')
         valdir = os.path.join(args.data, 'val')
-        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
 
         train_dataset = datasets.ImageFolder(
             traindir,
@@ -244,12 +344,8 @@ def main_worker(gpu, ngpus_per_node, args):
 
         val_dataset = datasets.ImageFolder(
             valdir,
-            transforms.Compose([
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                normalize,
-            ]))
+            val_transformers
+            )
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -267,7 +363,46 @@ def main_worker(gpu, ngpus_per_node, args):
         num_workers=args.workers, pin_memory=True, sampler=val_sampler)
 
     if args.evaluate:
-        validate(val_loader, model, criterion, args)
+        if args.device == "cuda" and args.trt:
+            import torch_tensorrt
+            script_model = torch.jit.script(model)
+
+            images = torch.randn(args.batch_size, 3, args.image_size, args.image_size).cuda(args.gpu, non_blocking=True)
+            if args.precision == "float16":
+                images = images.half()
+                enabled_precisions = {torch.half}
+            else:
+                enabled_precisions = {torch.float}
+            spec = {
+                #"inputs": [torch_tensorrt.Input([args.batch_size, 3, args.image_size, args.image_size], dtype=torch.half)],
+                "inputs": [images],
+                "enabled_precisions": enabled_precisions,
+                "refit": False,
+                "debug": False,
+                "device": {
+                    "device_type": torch_tensorrt.DeviceType.GPU,
+                    "gpu_id": 0,
+                    "dla_core": 0,
+                    "allow_gpu_fallback": True
+                },
+                "capability": torch_tensorrt.EngineCapability.default,
+                "num_min_timing_iters": 2,
+                "num_avg_timing_iters": 1,
+            }
+            # trt_model = torch._C._jit_to_backend("tensorrt", script_model, spec)
+            trt_model = torch_tensorrt.ts.compile(script_model, **spec)
+            model = trt_model
+            print("---- Use TRT model")
+
+        if args.device == "cuda":
+            with torch.cuda.amp.autocast(enabled=True, dtype=args.datatype):
+                validate(val_loader, model, criterion, args)
+        elif args.device == "xpu":
+            with torch.xpu.amp.autocast(enabled=True, dtype=args.datatype):
+                validate(val_loader, model, criterion, args)
+        else:
+            with torch.cpu.amp.autocast(enabled=True, dtype=args.datatype):
+                validate(val_loader, model, criterion, args)
         return
 
     for epoch in range(args.start_epoch, args.epochs):
@@ -345,45 +480,116 @@ def train(train_loader, model, criterion, optimizer, epoch, device, args):
 
 
 def validate(val_loader, model, criterion, args):
+    if args.nv_fuser:
+        fuser_mode = "fuser2"
+    else:
+        fuser_mode = "none"
+    print("---- fuser mode:", fuser_mode)
+    if args.jit:
+        sample_input = iter(val_loader).__next__()[0]
+        with torch.no_grad():
+            try:
+                modelJit = torch.jit.script(model)
+                print("---- Use trace model.")
+                model = modelJit
+            except (RuntimeError, TypeError) as e:
+                print("---- JIT trace disable.")
+                print("failed to use PyTorch jit mode due to: ", e)
+        if args.bn_folding and args.device == "cuda":
+            model = wrap_cpp_module(torch._C._jit_pass_fold_convbn(model._c))
+            print("---- Conv+bn folding")
 
     def run_validate(loader, base_progress=0):
+        profile_iter = (args.num_iter+args.num_warmup) // 2
         with torch.no_grad():
-            end = time.time()
-            for i, (images, target) in enumerate(loader):
-                i = base_progress + i
-                if args.gpu is not None and torch.cuda.is_available():
-                    images = images.cuda(args.gpu, non_blocking=True)
-                if torch.backends.mps.is_available():
-                    images = images.to('mps')
-                    target = target.to('mps')
-                if torch.cuda.is_available():
-                    target = target.cuda(args.gpu, non_blocking=True)
+            if args.profile and args.device == "xpu":
+                pass
+            elif args.profile and args.device != "xpu":
+                if args.device == "cuda":
+                    profile_act = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
+                else:
+                    profile_act = [torch.profiler.ProfilerActivity.CPU]
+                with torch.profiler.profile(
+                    activities=profile_act,
+                    record_shapes=True,
+                    schedule=torch.profiler.schedule(
+                        wait=profile_iter,
+                        warmup=1,
+                        active=1,
+                    ),
+                    on_trace_ready=trace_handler,
+                ) as p:
+                    for i, (images, target) in enumerate(loader):
+                        if i == args.num_iter:
+                            break
+                        if args.channels_last and args.device != "xpu":
+                            if len(images.shape) == 4:
+                                images = images.to(memory_format=torch.channels_last)
+                            elif len(images.shape) == 5:
+                                images = images.to(memory_format=torch.channels_last_3d)
 
-                # compute output
-                output = model(images)
-                loss = criterion(output, target)
+                        start_time = time.time()
+                        images = images.to(args.device)
+                        target = target.to(args.device)
 
-                # measure accuracy and record loss
-                acc1, acc5 = accuracy(output, target, topk=(1, 5))
-                losses.update(loss.item(), images.size(0))
-                top1.update(acc1[0], images.size(0))
-                top5.update(acc5[0], images.size(0))
+                        # compute output
+                        if args.device == "cuda":
+                            with torch.jit.fuser(fuser_mode):
+                                output = model(images)
+                        else:
+                            output = model(images)
 
-                # measure elapsed time
-                batch_time.update(time.time() - end)
-                end = time.time()
+                        if args.device == "cuda":
+                            torch.cuda.synchronize()
+                        duration = time.time() - start_time
+                        p.step()
+                        loss = criterion(output, target)
 
-                if i % args.print_freq == 0:
-                    progress.display(i + 1)
+                        print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
+                        if i >= args.num_warmup:
+                            batch_time.update(duration)
+            else:
+                for i, (images, target) in enumerate(loader):
+                    if i == args.num_iter:
+                        break
+                    if args.channels_last and args.device != "xpu":
+                        if len(images.shape) == 4:
+                            images = images.to(memory_format=torch.channels_last)
+                        elif len(images.shape) == 5:
+                            images = images.to(memory_format=torch.channels_last_3d)
+
+                    start_time = time.time()
+                    images = images.to(args.device)
+                    target = target.to(args.device)
+
+                    # compute output
+                    if args.device == "cuda":
+                        with torch.jit.fuser(fuser_mode):
+                            output = model(images)
+                    else:
+                        output = model(images)
+
+                    if args.device == "cuda":
+                        torch.cuda.synchronize()
+                    elif args.device == "xpu":
+                        torch.xpu.synchronize()
+                    duration = time.time() - start_time
+                    loss = criterion(output, target)
+
+                    print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
+                    if i >= args.num_warmup:
+                        batch_time.update(duration)
+
+            batch_size = args.batch_size
+            latency = batch_time.avg / batch_size * 1000
+            perf = batch_size/batch_time.avg
+            print('inference latency: %3.3f ms'%latency)
+            print('inference Throughput: %3.3f fps'%perf)
 
     batch_time = AverageMeter('Time', ':6.3f', Summary.NONE)
     losses = AverageMeter('Loss', ':.4e', Summary.NONE)
     top1 = AverageMeter('Acc@1', ':6.2f', Summary.AVERAGE)
     top5 = AverageMeter('Acc@5', ':6.2f', Summary.AVERAGE)
-    progress = ProgressMeter(
-        len(val_loader) + (args.distributed and (len(val_loader.sampler) * args.world_size < len(val_loader.dataset))),
-        [batch_time, losses, top1, top5],
-        prefix='Test: ')
 
     # switch to evaluate mode
     model.eval()
@@ -400,8 +606,6 @@ def validate(val_loader, model, criterion, args):
             aux_val_dataset, batch_size=args.batch_size, shuffle=False,
             num_workers=args.workers, pin_memory=True)
         run_validate(aux_val_loader, len(val_loader))
-
-    progress.display_summary()
 
     return top1.avg
 
@@ -506,6 +710,26 @@ def accuracy(output, target, topk=(1,)):
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
 
+def get_image_size(model_name):
+    if model_name in params_dict:
+        _, _, res, _ = params_dict[model_name]
+    else:
+        assert False, "Unsupported model:{}".format(model_name)
+    return res
+
+def trace_handler(p):
+    output = p.key_averages().table(sort_by="self_cpu_time_total")
+    print(output)
+    import pathlib
+    timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+    if not os.path.exists(timeline_dir):
+        try:
+            os.makedirs(timeline_dir)
+        except:
+            pass
+    timeline_file = timeline_dir + 'timeline-' + str(torch.backends.quantized.engine) + '-' + \
+                args.arch + '-' + str(p.step_num) + '-' + str(os.getpid()) + '.json'
+    p.export_chrome_trace(timeline_file)
 
 if __name__ == '__main__':
     main()
