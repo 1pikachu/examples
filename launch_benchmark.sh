@@ -65,7 +65,6 @@ function generate_core {
 	        addtion_options+=" --nv_fuser "
 	    fi
 	fi
-	# remove jit, longformers fail with "ValueError: not enough values to unpack (expected 2, got 1)"
         printf " ${OOB_EXEC_HEADER} \
 	    python ${exec_cmd} \
 	        --pretrained -j 1 \
