@@ -5,6 +5,7 @@ import shutil
 import time
 import warnings
 from enum import Enum
+import PIL
 
 import torch
 import torch.backends.cudnn as cudnn
