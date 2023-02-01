@@ -640,10 +640,7 @@ def validate(val_loader, model, criterion, args):
         sample_input = iter(val_loader).__next__()[0].to(args.device)
         with torch.no_grad():
             try:
-                if args.device == "cuda":
-                    modelJit = torch.jit.script(model)
-                else:
-                    modelJit = torch.jit.trace(model, sample_input)
+                modelJit = torch.jit.trace(model, sample_input, check_trace=False)
                 print("---- Use trace model.")
                 model = modelJit
             except (RuntimeError, TypeError) as e:
