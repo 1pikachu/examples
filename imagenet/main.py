@@ -201,6 +201,10 @@ def main_worker(gpu, ngpus_per_node, args):
             else:
                 if args.arch == "googlenet":
                     model = models.__dict__[args.arch](pretrained=True, transform_input=False)
+                elif args.arch == "squeezenet1_1":
+                    model = models.squeezenet1_1(weights='SqueezeNet1_1_Weights.DEFAULT')
+                elif args.arch == "squeezenet1_0":
+                    model = models.squeezenet1_0(weights='SqueezeNet1_0_Weights.DEFAULT')
                 else:
                     model = models.__dict__[args.arch](pretrained=True)
         else:
