@@ -25,6 +25,7 @@ from torch.utils.data import Subset
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
+model_names += ["fbnetc_100", "spnasnet_100"]
 
 params_dict = {
     # Coefficients:   width,depth,res,dropout
