@@ -94,6 +94,8 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'multi node data parallel training')
 parser.add_argument('--dummy', action='store_true', help="use fake data to benchmark")
 # OOB
+parser.add_argument('--num-classes', type=int, default=1000,
+                    help='Number classes in dataset')
 parser.add_argument('--precision', default="float32", type=str, help='precision')
 parser.add_argument('--channels_last', default=1, type=int, help='Use NHWC or not')
 parser.add_argument('--jit', action='store_true', default=False, help='enable JIT')
