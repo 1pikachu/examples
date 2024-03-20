@@ -24,8 +24,8 @@ function main {
             # clean workspace
             logs_path_clean
 
-	    # get batchSize
-	    DATASET_DIR=/home2/pytorch-broad-models/imagenet/raw
+	        # get batchSize
+	        DATASET_DIR=/home2/pytorch-broad-models/imagenet/raw
             if [[ ${mode_name} == "train" ]];then
                 exec_cmd=" ./imagenet/main.py --data ${DATASET_DIR} --epochs 1 "
             else # realtime
@@ -62,21 +62,23 @@ function generate_core {
             OOB_EXEC_HEADER+=" -C $(echo ${device_array[i]} |awk -F ';' '{print $1}') "
         elif [ "${device}" == "cuda" ];then
             OOB_EXEC_HEADER=" CUDA_VISIBLE_DEVICES=${device_array[i]} "
-	    if [[ "${mode_name}" == "realtime" ]];then
-	        addtion_options+=" --nv_fuser "
+            if [[ "${mode_name}" == "realtime" ]];then
+                addtion_options+=" --nv_fuser "
+            fi
+        elif [ "${device}" == "xpu" ];then
+            OOB_EXEC_HEADER=" ZE_AFFINITY_MASK=${i} "
 	    fi
-	fi
         printf " ${OOB_EXEC_HEADER} \
-	    python ${exec_cmd} \
+	        python ${exec_cmd} \
 	        --pretrained -j 1 \
-                --num_warmup ${num_warmup} --num_iter ${num_iter} \
-                -a ${model_name} \
-                -b ${batch_size} \
-                --precision ${precision} \
-                --channels_last ${channels_last} \
-		--device ${device} \
-                ${addtion_options} \
-        > ${log_file} 2>&1 &  \n" |tee -a ${excute_cmd_file}
+            --num_warmup ${num_warmup} --num_iter ${num_iter} \
+            -a ${model_name} \
+            -b ${batch_size} \
+            --precision ${precision} \
+            --channels_last ${channels_last} \
+		    --device ${device} \
+            ${addtion_options} \
+            > ${log_file} 2>&1 &  \n" |tee -a ${excute_cmd_file}
         if [ "${numa_nodes_use}" == "0" ];then
             break
         fi
