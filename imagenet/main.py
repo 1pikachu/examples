@@ -110,6 +110,8 @@ parser.add_argument('--bn_folding', action='store_true', default=False,
                     help='enable bn folding')
 parser.add_argument('--image_size', default=224, type=int,
                     help='image size')
+parser.add_argument('--compile', action='store_true', default=False, help='compile model')
+parser.add_argument('--backend', default="inductor", type=str, help='backend')
 
 args = parser.parse_args()
 best_acc1 = 0
@@ -284,6 +286,9 @@ def main_worker(gpu, ngpus_per_node, args):
         else:
             model, optimizer = torch.xpu.optimize(model=model, optimizer=optimizer, dtype=args.datatype)
         print("----xpu optimize")
+    if args.compile:
+        print("----enable compiler")
+        model = torch.compile(model, backend=args.backend, options={"freezing": True})
     
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
     scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
