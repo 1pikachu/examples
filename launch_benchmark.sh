@@ -29,7 +29,7 @@ function main {
             if [[ ${mode_name} == "train" ]];then
                 exec_cmd=" ./imagenet/main.py --data ${DATASET_DIR} --epochs 1 "
             else # realtime
-                exec_cmd=" ./imagenet/main.py -e --dummy --jit "
+                exec_cmd=" ./imagenet/main.py -e --dummy "
             fi
 
             # generate launch script for multiple instance
@@ -68,6 +68,11 @@ function generate_core {
         elif [ "${device}" == "xpu" ];then
             OOB_EXEC_HEADER=" ZE_AFFINITY_MASK=${i} "
 	    fi
+        if [[ "${addtion_options}" =~ "--compile" ]];then
+            echo "run with compile"
+        elif [[ "${mode_name}" == "realtime" ]];then
+            addtion_options+=" --jit "
+        fi
         printf " ${OOB_EXEC_HEADER} \
 	        python ${exec_cmd} \
 	        --pretrained -j 1 \
