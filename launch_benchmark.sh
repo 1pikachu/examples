@@ -9,7 +9,7 @@ function main {
     set_environment
 
     # requirements
-    pip install expecttest==0.1.4 geffnet==1.0.2 --no-deps
+    pip install expecttest==0.1.4 geffnet==1.0.2 opencv-python==4.8.0.74 --no-deps
 
     # if multiple use 'xxx,xxx,xxx'
     model_name_list=($(echo "${model_name}" |sed 's/,/ /g'))
