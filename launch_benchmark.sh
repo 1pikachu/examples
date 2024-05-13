@@ -11,6 +11,7 @@ function main {
     # requirements
     pip install expecttest==0.1.4 geffnet==1.0.2 opencv-python==4.8.0.74 --no-deps
 
+    cp oob-common/context_func.py imagenet/.
     # if multiple use 'xxx,xxx,xxx'
     model_name_list=($(echo "${model_name}" |sed 's/,/ /g'))
     batch_size_list=($(echo "${batch_size}" |sed 's/,/ /g'))
