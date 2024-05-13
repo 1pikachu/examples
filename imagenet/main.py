@@ -6,6 +6,7 @@ import time
 import warnings
 from enum import Enum
 import PIL
+from context_func import context_func
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -666,96 +667,16 @@ def validate(val_loader, model, criterion, args):
     def run_validate(loader, base_progress=0):
         profile_iter = (args.num_iter+args.num_warmup) // 2
         with torch.no_grad():
-            if args.profile and args.device == "xpu":
-                for i, (images, target) in enumerate(loader):
-                    if i == args.num_iter:
-                        break
-                    if args.channels_last and args.device != "xpu":
-                        if len(images.shape) == 4:
-                            images = images.to(memory_format=torch.channels_last)
-                        elif len(images.shape) == 5:
-                            images = images.to(memory_format=torch.channels_last_3d)
+            for i, (images, target) in enumerate(loader):
+                if i == args.num_iter:
+                    break
+                if args.channels_last and args.device != "xpu":
+                    if len(images.shape) == 4:
+                        images = images.to(memory_format=torch.channels_last)
+                    elif len(images.shape) == 5:
+                        images = images.to(memory_format=torch.channels_last_3d)
 
-                    with torch.autograd.profiler_legacy.profile(enabled=True, use_xpu=True, record_shapes=False) as prof:
-                        start_time = time.time()
-                        images = images.to(args.device)
-
-                        # compute output
-                        output = model(images)
-
-                        torch.xpu.synchronize()
-                        duration = time.time() - start_time
-
-                    print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
-                    if i >= args.num_warmup:
-                        batch_time.update(duration)
-                    if args.profile and i == profile_iter:
-                        import pathlib
-                        timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
-                        if not os.path.exists(timeline_dir):
-                            try:
-                                os.makedirs(timeline_dir)
-                            except:
-                                pass
-                        torch.save(prof.key_averages().table(sort_by="self_xpu_time_total"),
-                            timeline_dir+'profile.pt')
-                        torch.save(prof.key_averages(group_by_input_shape=True).table(),
-                            timeline_dir+'profile_detail.pt')
-                        torch.save(prof.table(sort_by="id", row_limit=100000),
-                            timeline_dir+'profile_detail_withId.pt')
-                        prof.export_chrome_trace(timeline_dir+"trace.json")
-            elif args.profile and args.device != "xpu":
-                if args.device == "cuda":
-                    profile_act = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
-                else:
-                    profile_act = [torch.profiler.ProfilerActivity.CPU]
-                with torch.profiler.profile(
-                    activities=profile_act,
-                    record_shapes=True,
-                    schedule=torch.profiler.schedule(
-                        wait=profile_iter,
-                        warmup=1,
-                        active=1,
-                    ),
-                    on_trace_ready=trace_handler,
-                ) as p:
-                    for i, (images, target) in enumerate(loader):
-                        if i == args.num_iter:
-                            break
-                        if args.channels_last and args.device != "xpu":
-                            if len(images.shape) == 4:
-                                images = images.to(memory_format=torch.channels_last)
-                            elif len(images.shape) == 5:
-                                images = images.to(memory_format=torch.channels_last_3d)
-
-                        start_time = time.time()
-                        images = images.to(args.device)
-
-                        # compute output
-                        if args.device == "cuda":
-                            with torch.jit.fuser(fuser_mode):
-                                output = model(images)
-                        else:
-                            output = model(images)
-
-                        if args.device == "cuda":
-                            torch.cuda.synchronize()
-                        duration = time.time() - start_time
-                        p.step()
-
-                        print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
-                        if i >= args.num_warmup:
-                            batch_time.update(duration)
-            else:
-                for i, (images, target) in enumerate(loader):
-                    if i == args.num_iter:
-                        break
-                    if args.channels_last and args.device != "xpu":
-                        if len(images.shape) == 4:
-                            images = images.to(memory_format=torch.channels_last)
-                        elif len(images.shape) == 5:
-                            images = images.to(memory_format=torch.channels_last_3d)
-
+                with context_func(args.profile and i == profile_iter, args.device, args.fuser_mode):
                     start_time = time.time()
                     images = images.to(args.device)
 
@@ -771,10 +692,9 @@ def validate(val_loader, model, criterion, args):
                     elif args.device == "xpu":
                         torch.xpu.synchronize()
                     duration = time.time() - start_time
-
-                    print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
-                    if i >= args.num_warmup:
-                        batch_time.update(duration)
+                print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
+                if i >= args.num_warmup:
+                    batch_time.update(duration)
 
             batch_size = args.batch_size
             latency = batch_time.avg / batch_size * 1000
