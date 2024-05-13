@@ -113,6 +113,7 @@ parser.add_argument('--image_size', default=224, type=int,
                     help='image size')
 parser.add_argument('--compile', action='store_true', default=False, help='compile model')
 parser.add_argument('--backend', default="inductor", type=str, help='backend')
+parser.add_argument("--accuracy", action="store_true", help="calculate accuracy")
 
 args = parser.parse_args()
 best_acc1 = 0
@@ -549,6 +550,16 @@ def validate(val_loader, model, criterion, args):
                     else:
                         output = model(images)
 
+                    if args.accuracy:
+                        target = target.to(args.device)
+                        loss = criterion(output, target)
+                        # measure accuracy and record loss
+                        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+                        print("acc1: {}, acc5: {}".format(acc1, acc5))
+                        losses.update(loss.item(), images.size(0))
+                        top1.update(acc1[0], images.size(0))
+                        top5.update(acc5[0], images.size(0))
+
                     if args.device == "cuda":
                         torch.cuda.synchronize()
                     elif args.device == "xpu":
@@ -563,6 +574,8 @@ def validate(val_loader, model, criterion, args):
             perf = batch_size/batch_time.avg
             print('inference latency: %3.3f ms'%latency)
             print('inference Throughput: %3.3f fps'%perf)
+            if args.accuracy:
+                print("inference accuracy: %3.2f"%(top1.avg))
 
     batch_time = AverageMeter('Time', ':6.3f', Summary.NONE)
     losses = AverageMeter('Loss', ':.4e', Summary.NONE)

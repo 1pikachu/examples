@@ -29,6 +29,8 @@ function main {
 	        DATASET_DIR=/home2/pytorch-broad-models/imagenet/raw
             if [[ ${mode_name} == "train" ]];then
                 exec_cmd=" ./imagenet/main.py --data ${DATASET_DIR} --epochs 1 "
+            elif [[ "${addtion_options}" =~ "--accuracy" ]];then
+                exec_cmd=" ./imagenet/main.py --data ${DATASET_DIR} -e "
             else # realtime
                 exec_cmd=" ./imagenet/main.py -e --dummy "
             fi
