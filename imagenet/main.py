@@ -472,9 +472,8 @@ def train(train_loader, model, criterion, optimizer, epoch, device, args):
             target = target.to(device, non_blocking=True)
 
             # compute output
-            with torch.xpu.amp.autocast(enabled=True, dtype=args.datatype):
-                output = model(images)
-                loss = criterion(output, target)
+            output = model(images)
+            loss = criterion(output, target)
             # measure accuracy and record loss
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
             losses.update(loss.item(), images.size(0))
