@@ -114,6 +114,8 @@ parser.add_argument('--image_size', default=224, type=int,
 parser.add_argument('--compile', action='store_true', default=False, help='compile model')
 parser.add_argument('--backend', default="inductor", type=str, help='backend')
 parser.add_argument("--accuracy", action="store_true", help="calculate accuracy")
+parser.add_argument('--ipex', default=False, action='store_true', help="ipex is not enabled now")
+parser.add_argument("--xpu_fallback", default=False, action="store_true", help="Whether to set xpu fallback")
 
 args = parser.parse_args()
 best_acc1 = 0
@@ -121,7 +123,7 @@ best_acc1 = 0
 
 def main():
 
-    if args.device == "xpu":
+    if args.device == "xpu" and args.ipex:
         import intel_extension_for_pytorch
     elif args.device == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = False
@@ -281,13 +283,19 @@ def main_worker(gpu, ngpus_per_node, args):
                                 weight_decay=args.weight_decay)
 
     args.datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
-    if args.device == "xpu":
-        if args.evaluate:
+    if args.device == "xpu" and args.evaluate:
+        if args.ipex:
             model.eval()
             model = torch.xpu.optimize(model=model, dtype=args.datatype)
+            print("----xpu optimize")
         else:
-            model, optimizer = torch.xpu.optimize(model=model, optimizer=optimizer, dtype=args.datatype)
-        print("----xpu optimize")
+            # model, optimizer = torch.xpu.optimize(model=model, optimizer=optimizer, dtype=args.datatype)
+            model.eval()
+        #print("----xpu optimize")
+    if args.xpu_fallback:
+        os.environ["PYTORCH_ENABLE_XPU_FALLBACK"] = "1"
+        print("PYTORCH_ENABLE_XPU_FALLBACK", os.environ["PYTORCH_ENABLE_XPU_FALLBACK"])
+        print("----enable fallback")
     if args.compile:
         print("----enable compiler")
         model = torch.compile(model, backend=args.backend, options={"freezing": True})
