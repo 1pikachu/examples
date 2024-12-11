@@ -262,7 +262,7 @@ def main_worker(gpu, ngpus_per_node, args):
     device = torch.device(args.device)
     model = model.to(device)
     print("----model device:", device)
-    if args.channels_last and args.device != "xpu":
+    if args.channels_last:
         model = model.to(memory_format=torch.channels_last)
         print("Use NHWC model.")
 
@@ -541,7 +541,7 @@ def validate(val_loader, model, criterion, args):
             for i, (images, target) in enumerate(loader):
                 if i == args.num_iter:
                     break
-                if args.channels_last and args.device != "xpu":
+                if args.channels_last:
                     if len(images.shape) == 4:
                         images = images.to(memory_format=torch.channels_last)
                     elif len(images.shape) == 5:
