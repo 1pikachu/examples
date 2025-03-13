@@ -547,7 +547,7 @@ def validate(val_loader, model, criterion, args):
                     elif len(images.shape) == 5:
                         images = images.to(memory_format=torch.channels_last_3d)
 
-                with context_func(args.profile and i == profile_iter, args.device, fuser_mode, yes):
+                with context_func(args.profile and i == profile_iter, args.device, fuser_mode, "yes"):
                     start_time = time.time()
                     images = images.to(args.device)
 
