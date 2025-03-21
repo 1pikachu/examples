@@ -537,26 +537,25 @@ def validate(val_loader, model, criterion, args):
 
     def run_validate(loader, base_progress=0):
         profile_iter = (args.num_iter+args.num_warmup) // 2
+        length = len(loader)
+        images, target = next(iter(loader))
+        if args.channels_last:
+            if len(images.shape) == 4:
+                images = images.to(memory_format=torch.channels_last)
+            elif len(images.shape) == 5:
+                images = images.to(memory_format=torch.channels_last_3d)
+        images = images.to(args.device)
+
         with torch.no_grad():
-            for i, (images, target) in enumerate(loader):
+            for i in range(length):
                 if i == args.num_iter:
                     break
-                if args.channels_last:
-                    if len(images.shape) == 4:
-                        images = images.to(memory_format=torch.channels_last)
-                    elif len(images.shape) == 5:
-                        images = images.to(memory_format=torch.channels_last_3d)
 
                 with context_func(args.profile and i == profile_iter, args.device, fuser_mode, "yes"):
                     start_time = time.time()
-                    images = images.to(args.device)
 
                     # compute output
-                    if args.device == "cuda":
-                        with torch.jit.fuser(fuser_mode):
-                            output = model(images)
-                    else:
-                        output = model(images)
+                    output = model(images)
 
                     if args.accuracy:
                         target = target.to(args.device)
