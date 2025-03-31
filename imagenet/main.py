@@ -545,6 +545,10 @@ def validate(val_loader, model, criterion, args):
             elif len(images.shape) == 5:
                 images = images.to(memory_format=torch.channels_last_3d)
         images = images.to(args.device)
+        if args.device == "cuda":
+            torch.cuda.synchronize()
+        elif args.device == "xpu":
+            torch.xpu.synchronize()
 
         with torch.no_grad():
             for i in range(length):
@@ -567,10 +571,6 @@ def validate(val_loader, model, criterion, args):
                         top1.update(acc1[0], images.size(0))
                         top5.update(acc5[0], images.size(0))
 
-                    if args.device == "cuda":
-                        torch.cuda.synchronize()
-                    elif args.device == "xpu":
-                        torch.xpu.synchronize()
                     duration = time.time() - start_time
                 print("Iteration: {}, inference time: {} sec.".format(i, duration), flush=True)
                 if i >= args.num_warmup:
